@@ -4,7 +4,7 @@ services:
   # Redpanda Broker
   redpanda:
     image: redpandadata/redpanda:v23.3.3
-    platform: linux/arm64
+    #platform: linux/arm64
     container_name: redpanda-broker
     command:
       - redpanda
@@ -38,7 +38,7 @@ services:
   # Redpanda Console Web UI
   redpanda-console:
     image: redpandadata/console:v2.3.8
-    platform: linux/arm64
+    #platform: linux/arm64
     container_name: redpanda-console
     entrypoint: /bin/sh
     command: -c 'echo "$$CONSOLE_CONFIG_FILE" > /tmp/config.yml; /app/console'
@@ -65,7 +65,7 @@ services:
   # Elasticsearch per storage log
   elasticsearch:
     image: elasticsearch:8.11.0
-    platform: linux/arm64
+    #platform: linux/arm64
     container_name: elasticsearch
     environment:
       - discovery.type=single-node
@@ -87,7 +87,7 @@ services:
   # Kibana per visualizzazione log
   kibana:
     image: kibana:8.11.0
-    platform: linux/arm64
+    #platform: linux/arm64
     container_name: kibana
     environment:
       - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
@@ -104,7 +104,7 @@ services:
   # Logstash per processing (con configurazione inline)
   logstash:
     image: logstash:8.11.0
-    platform: linux/arm64
+    #platform: linux/arm64
     container_name: logstash
     environment:
       - LS_JAVA_OPTS=-Xms256m -Xmx256m
