@@ -1,0 +1,179 @@
+version: '3.8'
+
+services:
+  # Redpanda Broker
+  redpanda:
+    image: redpandadata/redpanda:v23.3.3
+    platform: linux/arm64
+    container_name: redpanda-broker
+    command:
+      - redpanda
+      - start
+      - --kafka-addr internal://0.0.0.0:9092,external://0.0.0.0:19092
+      - --advertise-kafka-addr internal://redpanda:9092,external://localhost:19092
+      - --pandaproxy-addr internal://0.0.0.0:8082,external://0.0.0.0:18082
+      - --advertise-pandaproxy-addr internal://redpanda:8082,external://localhost:18082
+      - --schema-registry-addr internal://0.0.0.0:8081,external://0.0.0.0:18081
+      - --rpc-addr redpanda:33145
+      - --advertise-rpc-addr redpanda:33145
+      - --smp 1
+      - --memory 1G
+      - --mode dev-container
+      - --default-log-level=info
+    ports:
+      - "18081:8081"   # Schema Registry
+      - "18082:8082"   # HTTP Proxy
+      - "19092:9092"   # Kafka API
+      - "19644:9644"   # Admin API
+    volumes:
+      - redpanda-data:/var/lib/redpanda/data
+    networks:
+      - log-network
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health | grep -E 'Healthy|ready'"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # Redpanda Console Web UI
+  redpanda-console:
+    image: redpandadata/console:v2.3.8
+    platform: linux/arm64
+    container_name: redpanda-console
+    entrypoint: /bin/sh
+    command: -c 'echo "$$CONSOLE_CONFIG_FILE" > /tmp/config.yml; /app/console'
+    environment:
+      CONFIG_FILEPATH: /tmp/config.yml
+      CONSOLE_CONFIG_FILE: |
+        kafka:
+          brokers: ["redpanda:9092"]
+          schemaRegistry:
+            enabled: true
+            urls: ["http://redpanda:8081"]
+        redpanda:
+          adminApi:
+            enabled: true
+            urls: ["http://redpanda:9644"]
+    ports:
+      - "8080:8080"
+    networks:
+      - log-network
+    depends_on:
+      redpanda:
+        condition: service_healthy
+
+  # Elasticsearch per storage log
+  elasticsearch:
+    image: elasticsearch:8.11.0
+    platform: linux/arm64
+    container_name: elasticsearch
+    environment:
+      - discovery.type=single-node
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+      - xpack.security.enabled=false
+      - xpack.security.enrollment.enabled=false
+    ports:
+      - "9200:9200"
+    volumes:
+      - elasticsearch-data:/usr/share/elasticsearch/data
+    networks:
+      - log-network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9200/_cluster/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # Kibana per visualizzazione log
+  kibana:
+    image: kibana:8.11.0
+    platform: linux/arm64
+    container_name: kibana
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+      - SERVER_NAME=kibana
+      - SERVER_HOST=0.0.0.0
+    ports:
+      - "5601:5601"
+    networks:
+      - log-network
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+
+  # Logstash per processing (con configurazione inline)
+  logstash:
+    image: logstash:8.11.0
+    platform: linux/arm64
+    container_name: logstash
+    environment:
+      - LS_JAVA_OPTS=-Xms256m -Xmx256m
+      - PIPELINE_WORKERS=1
+    command: |
+      bash -c "
+        echo 'input {
+          kafka {
+            bootstrap_servers => \"redpanda:9092\"
+            topics_pattern => \"logs\\..*\"
+            codec => json
+            consumer_threads => 1
+          }
+        }
+        
+        filter {
+          if [level] == \"ERROR\" or [level] == \"FATAL\" {
+            mutate {
+              add_tag => [\"error\"]
+            }
+          }
+          
+          if [timestamp] {
+            date {
+              match => [ \"timestamp\", \"ISO8601\" ]
+              target => \"@timestamp\"
+            }
+          }
+        }
+        
+        output {
+          elasticsearch {
+            hosts => [\"elasticsearch:9200\"]
+            index => \"logs-%{[application][name]}-%{+YYYY.MM.dd}\"
+            ilm_enabled => false
+            action => "create"  
+          }
+          
+          stdout {
+            codec => rubydebug
+          }
+        }' > /usr/share/logstash/pipeline/logstash.conf &&
+        /usr/local/bin/docker-entrypoint"
+    ports:
+      - "5005:5005"  # TCP input
+      - "9600:9600"  # Monitoring
+    networks:
+      - log-network
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+      redpanda:
+        condition: service_healthy
+
+  # Log Producer (Python script container)
+  log-producer:
+    build:
+      context: ./log-producer
+      dockerfile: Dockerfile
+    container_name: log-producer
+    depends_on:
+      - redpanda
+    networks:
+      - log-network
+
+volumes:
+  redpanda-data:
+  elasticsearch-data:
+
+networks:
+  log-network:
+    driver: bridge
